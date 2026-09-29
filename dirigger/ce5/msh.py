@@ -68,6 +68,7 @@ class Lod:
     vertex_count: int
     index_offset: int          # byte offset into IndexData
     stream_offsets: list       # byte offsets into VertexData
+    raw: bytes = b""
 
 
 @dataclass
@@ -77,6 +78,8 @@ class Morphs:
     target_offsets: list
     vertex_count: int
     data_offset: int
+    base_data: bytes = b""     # opaque block at data_offset, before the first target
+    targets: list = None       # opaque per-target blocks (16-byte padded)
 
 
 @dataclass
@@ -85,6 +88,8 @@ class Mesh:
     palettes: list             # bone palette (node indices) per surface
     lods: list
     morphs: Morphs = None
+    raw_a: bytes = b""
+    raw_b: bytes = b""
 
 
 @dataclass
@@ -119,6 +124,7 @@ class MeshFile:
     surface_params: list
     morph_names: list
     header: tuple
+    morph_table_words: list = field(default_factory=list)
     blob: Blob = None
     fixups: list = field(default_factory=list)
     vertex_data: bytes = b""
@@ -211,7 +217,7 @@ def _parse_lod(b: Blob, o):
     vcount, ib_off = b.u32(o + 12), b.u32(o + 16)
     streams = [s for s in b.arr("I", o + 20, MAX_STREAMS) if s != 0xFFFFFFFF]
     return Lod(list(b.arr("I", p_counts, n_surf)), _parse_elements(b, p_decl, n_elems),
-               vcount, ib_off, streams)
+               vcount, ib_off, streams, b.data[o:o + LOD_SIZE])
 
 
 def _parse_mesh(b: Blob, p_morph, p_mesh):
@@ -232,8 +238,13 @@ def _parse_mesh(b: Blob, p_morph, p_mesh):
         offs = list(b.arr("I", b.u32(p_morph + 4), nm))
         remap = list(b.arr("H", b.u32(p_morph + 8), nm))
         names = [b.cstr(b.u32(b.u32(p_morph + 12) + 4 * k)) for k in range(nm)]
-        morphs = Morphs(names, remap, offs, b.u32(p_morph + 16), b.u32(p_morph + 20))
-    return Mesh(slots, palettes, lods, morphs)
+        vc, data = b.u32(p_morph + 16), b.u32(p_morph + 20)
+        morphs = Morphs(names, remap, offs, vc, data,
+                        base_data=b.data[data:min(offs)],
+                        targets=[b.data[t:t + vc * 6] for t in offs])
+    return Mesh(slots, palettes, lods, morphs,
+                b.data[p_morph:p_morph + 0x20] if p_morph is not None else b"",
+                b.data[p_mesh:p_mesh + 0x20])
 
 
 def parse_msh(data: bytes, fixups=None, vertex_data=b"", index_data=b""):
@@ -273,6 +284,7 @@ def parse_msh(data: bytes, fixups=None, vertex_data=b"", index_data=b""):
 
     return MeshFile(
         name=b.cstr(b.ptr(0)),
+        morph_table_words=[b.u32(hdr[10] + 8 * k + 4) for k in range(hdr[9])] if hdr[9] else [],
         anim_script=b.cstr(b.ptr(0x40)),
         nodes=nodes,
         materials=materials,

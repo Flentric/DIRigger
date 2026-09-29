@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 *.glb
 samples/
+out_*/
+templates/*/

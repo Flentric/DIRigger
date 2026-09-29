@@ -1,9 +1,8 @@
 """Export a compiled CE5 mesh to binary glTF (.glb) for inspection in Blender.
 
-Conversion: Chrome Engine is left-handed Y-up in centimetres; glTF is
-right-handed Y-up in metres. We mirror Z and scale by 0.01. Mirroring flips
-triangle winding, which turns D3D clockwise front faces into glTF
-counter-clockwise ones, so indices are kept as-is.
+Conversion: model data is Y-up, facing +Z with the character's left on +X,
+counter-clockwise front faces, in centimetres. That already matches glTF's
+conventions, so we only scale by 0.01.
 """
 
 import json
@@ -16,17 +15,16 @@ SCALE = 0.01
 
 
 def _conv_point(p):
-    return (p[0] * SCALE, p[1] * SCALE, -p[2] * SCALE)
+    return (p[0] * SCALE, p[1] * SCALE, p[2] * SCALE)
 
 
 def _conv_dir(d):
-    return (d[0], d[1], -d[2])
+    return (d[0], d[1], d[2])
 
 
 def _conv_mat(m):
-    """3x4 row-major CE matrix -> glTF column-major 4x4 list, mirrored in Z."""
-    s = (1.0, 1.0, -1.0)
-    r = [[m[i][j] * s[i] * s[j] for j in range(3)] + [m[i][3] * s[i] * SCALE] for i in range(3)]
+    """3x4 row-major CE matrix -> glTF column-major 4x4 list (metres)."""
+    r = [[m[i][j] for j in range(3)] + [m[i][3] * SCALE] for i in range(3)]
     r.append([0.0, 0.0, 0.0, 1.0])
     return [r[i][j] for j in range(4) for i in range(4)]
 
@@ -115,7 +113,7 @@ def export_glb(msh, path, skin=None, include_hidden=False):
             attrs["NORMAL"] = b.add("3f", [_norm(_conv_dir(v)) for v in d["normals"]],
                                     FLOAT, "VEC3", ARRAY)
         if d["tangents"]:
-            rows = [_norm(_conv_dir(t[:3])) + ((-1.0 if t[3] < 0 else 1.0) * -1.0,)
+            rows = [_norm(_conv_dir(t[:3])) + ((-1.0 if t[3] < 0 else 1.0),)
                     for t in d["tangents"]]
             attrs["TANGENT"] = b.add("4f", rows, FLOAT, "VEC4", ARRAY)
         if d["uvs"]:

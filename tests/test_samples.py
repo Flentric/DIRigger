@@ -10,10 +10,12 @@ otherwise.
 
 import glob
 import os
+import struct
 import unittest
 
 from dirigger.ce5.msh import load_msh, NODE_MESH
 from dirigger.ce5.skin import parse_skin, build_skin
+from dirigger.ce5.msh_writer import build_msh
 
 SAMPLES = os.environ.get("DIRIGGER_SAMPLES", "")
 MSHS = sorted(glob.glob(os.path.join(SAMPLES, "**", "*.msh"), recursive=True)) if SAMPLES else []
@@ -37,6 +39,14 @@ class SampleTests(unittest.TestCase):
             b, f = build_skin(parse_skin(skin))
             self.assertEqual(b, skin, p)
             self.assertEqual(f, fix, p)
+
+    def test_msh_roundtrip(self):
+        for p in MSHS:
+            m = load_msh(p)
+            data, fix = build_msh(m)
+            self.assertEqual(data, m.blob.data, p)
+            n = len(fix) // 4
+            self.assertEqual(set(struct.unpack(f"<{n}I", fix)), set(m.fixups), p)
 
     def test_fixups_point_inside_blob(self):
         for p in MSHS:
@@ -83,6 +93,34 @@ class SampleTests(unittest.TestCase):
                 for pos in d["positions"]:
                     for a in range(3):
                         self.assertLessEqual(abs(pos[a] - c[a]), h[a] + 0.2, (p, n.name))
+
+
+OBJS = sorted(glob.glob(os.path.join(SAMPLES, "**", "*.obj"), recursive=True)) if SAMPLES else []
+LOGAN = [p for p in MSHS if os.path.basename(p).lower() == "hero_logan.msh"]
+
+
+@unittest.skipUnless(OBJS and LOGAN, "needs an .obj and hero_logan in DIRIGGER_SAMPLES")
+class AutorigTests(unittest.TestCase):
+
+    def test_autorig_builds_readable_model(self):
+        import tempfile
+        from dirigger.rig.cli import main
+        with tempfile.TemporaryDirectory() as out:
+            main([OBJS[0], "--template", LOGAN[0], "--out", out])
+            m = load_msh(os.path.join(out, "hero_logan.msh"))
+            names = [n.name for n in m.mesh_nodes]
+            self.assertIn("body", names)
+            self.assertIn("head", names)
+            self.assertIn("head_shadow", names)
+            tmpl = load_msh(LOGAN[0])
+            self.assertEqual([b.name for b in m.bones], [b.name for b in tmpl.bones])
+            for n in m.mesh_nodes:
+                for pal in n.mesh.palettes:
+                    self.assertLessEqual(len(pal), 45)
+            skin = parse_skin(open(os.path.join(out, "hero_logan.Skin"), "rb").read())
+            fpp = skin.get("Logan_FPP")
+            head = next(n.index for n in m.mesh_nodes if n.name == "head")
+            self.assertIn(head, [h for h, _ in fpp.hidden])
 
 
 if __name__ == "__main__":
