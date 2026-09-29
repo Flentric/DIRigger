@@ -110,7 +110,7 @@ Common layouts:
 u32 nMorphs | ptr targetOffsets u32[] | ptr remap u16[] | ptr names ptr[] | u32 vertexCount | ptr data | u32 1 | u32 0
 ```
 
-The facial targets (`#e_r_blink`, `open`, `pbm`, …) are stored inside `.msh`. The per-target delta encoding is not decoded yet.
+The facial targets (`#e_r_blink`, `open`, `pbm`, …) are stored inside `.msh`; see the end of this file.
 
 ### Material database
 
@@ -160,6 +160,6 @@ morph name table (4): {ptr name, u32 0}[] (points at the head's morph name strin
 `.MeshFixups` lists every pointer slot, including null ones, in node, mesh, LOD, declaration and
 header fields. The game's list is unordered; the writer emits it sorted.
 
-Mesh node records keep null pointers at +0x94..+0xA0. Morph targets are 16-byte padded blocks of
-`vertexCount × 6` bytes, and the base block in front of them is `vertexCount × 12 + 84` bytes. Their
-encoding is not decoded yet.
+Mesh node records keep null pointers at +0x94..+0xA0. Morph base data is the head's float3 positions (a copy of vertex stream 0), in Logan's case followed
+by 84 bytes of leftover padding. Each target is `int16 dx, dy, dz` per vertex, stored in a 16-byte
+padded block.

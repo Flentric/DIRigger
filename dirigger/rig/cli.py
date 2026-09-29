@@ -51,6 +51,10 @@ def main(argv=None):
                     help="texture for a region (head/torso/legs/feet); repeatable")
     ap.add_argument("--material", action="append", default=[], metavar="SLOT=NAME.mat",
                     help="use an existing game material for a slot; repeatable")
+    ap.add_argument("--reuse-materials", action="store_true",
+                    help="point every slot at the template's own materials (body/head) so the "
+                         "model renders with existing game materials; textures will not match "
+                         "until real materials are made")
     args = ap.parse_args(argv)
 
     obj_path = os.path.abspath(args.obj)
@@ -102,6 +106,10 @@ def main(argv=None):
     obj = load_obj(obj_path)
     print(f"model: {obj_path} ({len(obj.positions)} vertices, {len(obj.tris_pos)} triangles, "
           f"materials: {', '.join(obj.materials)})")
+    if args.reuse_materials or cfg.get("reuse_materials"):
+        from ..build.player import template_materials
+        for k, v in template_materials(tm, tskin).items():
+            materials.setdefault(k, v)
     tmpl = load_template(tm)
     rig = autorig(tmpl, obj.positions, obj.tris_pos,
                   up=args.up or cfg.get("up"), forward=args.forward or cfg.get("forward"),

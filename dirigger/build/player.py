@@ -21,10 +21,10 @@ from collections import OrderedDict
 
 import numpy as np
 
-from ..ce5.msh import Node, Mesh, MeshFile, Material, NODE_MESH, NODE_SIZE, load_msh
+from ..ce5.msh import Node, Mesh, MeshFile, Material, Morphs, NODE_MESH, load_msh
 from ..ce5.msh_writer import build_msh
 from ..ce5.skin import SkinFile, SkinPreset, build_skin
-from ..ce5.geometry import BufferBuilder, SKINNED, SHADOW, MAX_PALETTE, pack_influences
+from ..ce5.geometry import BufferBuilder, SKINNED, SHADOW, MORPH, MAX_PALETTE, pack_influences
 from ..rig.transfer import vertex_normals, tangents
 
 # texture regions, decided per UV island from skin weights
@@ -84,6 +84,54 @@ def _split_palettes(tris, tri_bones, limit=MAX_PALETTE):
     if cur:
         out.append((sorted(bones), cur))
     return out
+
+
+def template_materials(template_msh, template_skin):
+    """Slot name -> existing template material: head surfaces get the head material,
+    everything else the body material (taken from the template's first skin)."""
+    smap = dict(template_skin.skins[0].material_map) if template_skin else {}
+
+    def mat_of(node_name):
+        node = template_msh.node_by_name(node_name)
+        if node is None or not node.mesh.surface_slots:
+            return None
+        idx = smap.get(node.mesh.surface_slots[0])
+        return template_msh.materials[idx].name if idx is not None else None
+
+    body, head = mat_of("body"), mat_of("head")
+    out = {k: body for k in ("torso", "legs", "feet") if body}
+    if head:
+        out["head"] = head
+    return out
+
+
+def transfer_morphs(template_msh, head_positions, falloff=(1.0, 4.0)):
+    """Give a new head the template head's facial morph targets.
+
+    Each new vertex copies the per-target delta of the nearest template head
+    vertex (both are in the template's bind pose, in cm), fading to zero
+    between falloff[0] and falloff[1] cm away. Returns (Morphs, raw A record)
+    or None when the template head has no morphs.
+    """
+    node = template_msh.node_by_name("head")
+    if node is None or node.mesh.morphs is None:
+        return None
+    mo = node.mesh.morphs
+    tpos = np.frombuffer(mo.base_data[:mo.vertex_count * 12], np.float32).reshape(-1, 3)
+    deltas = np.stack([np.frombuffer(t, np.int16).reshape(-1, 3) for t in mo.targets])
+    P = np.asarray(head_positions, float)
+    near = np.zeros(len(P), int)
+    dist = np.zeros(len(P))
+    for s in range(0, len(P), 512):
+        d = np.linalg.norm(P[s:s + 512, None, :] - tpos[None, :, :], axis=2)
+        near[s:s + 512] = d.argmin(1)
+        dist[s:s + 512] = d.min(1)
+    lo, hi = falloff
+    fade = np.clip((hi - dist) / (hi - lo), 0.0, 1.0)
+    new = np.round(deltas[:, near, :] * fade[None, :, None]).astype(np.int16)
+    targets = [new[k].tobytes() for k in range(len(mo.targets))]
+    base = np.asarray(P, np.float32).tobytes()
+    return Morphs(list(mo.names), list(mo.remap), [], len(P), 0, base, targets), node.mesh.raw_a
 
 
 def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, textures=None,
@@ -161,7 +209,7 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
 
     buffers = BufferBuilder()
 
-    def make_mesh(tris, layout, slot_of_tri):
+    def make_mesh(tris, layout, slot_of_tri, morph=False):
         surfaces, slots_out, pals = [], [], []
         groups = OrderedDict()
         for t in tris:
@@ -191,7 +239,12 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
             raise ValueError("mesh part has more than 65535 vertices; split the model")
         lod = buffers.add_lod(layout, positions, surfaces, uvs, nrm, tan, wts, idx)
         P = np.array(positions)
-        return Mesh(slots_out, pals, [lod]), P
+        mesh = Mesh(slots_out, pals, [lod])
+        if morph:
+            res = transfer_morphs(template_msh, P)
+            if res:
+                mesh.morphs, mesh.raw_a = res
+        return mesh, P
 
     body_tris = [t for t in range(len(tri_rv)) if not is_head[t]]
     head_tris = [t for t in range(len(tri_rv)) if is_head[t]]
@@ -199,7 +252,9 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
     if body_tris:
         parts.append(("body",) + make_mesh(body_tris, SKINNED, lambda t: int(tri_slot[t])))
     if head_tris:
-        parts.append(("head",) + make_mesh(head_tris, SKINNED, lambda t: int(tri_slot[t])))
+        has_morphs = bool(template_msh.morph_names)
+        parts.append(("head",) + make_mesh(head_tris, MORPH if has_morphs else SKINNED,
+                                           lambda t: int(tri_slot[t]), morph=has_morphs))
         parts.append(("head_shadow",) + make_mesh(head_tris, SHADOW, lambda t: shadow_slot))
 
     # --- nodes ----------------------------------------------------------------
@@ -220,7 +275,9 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
     header[5] = len(parts) + 1
     msh = MeshFile(name=f"{base}.msh", anim_script=template_msh.anim_script, nodes=nodes,
                    materials=mats, slot_count=n_slots, surface_params=surface_params,
-                   morph_names=[], header=tuple(header))
+                   morph_names=list(template_msh.morph_names) if head_tris else [],
+                   morph_table_words=list(template_msh.morph_table_words) if head_tris else [],
+                   header=tuple(header))
     msh_bytes, fix_bytes = build_msh(msh)
 
     # --- skins ------------------------------------------------------------------

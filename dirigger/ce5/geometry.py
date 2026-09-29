@@ -16,6 +16,8 @@ from .msh import Lod, VertexElement, POS_SCALE, UV_SCALE
 SKINNED = [(7, 0, 0), (4, 1, 0), (4, 2, 0), (0x0A, 3, 1), (6, 4, 0), (0x0A, 5, 1)]
 RIGID = [(7, 0, 0), (4, 2, 0), (0x0A, 3, 1), (6, 4, 0), (0x0A, 5, 1)]
 SHADOW = [(7, 0, 0), (4, 1, 0), (4, 2, 0)]
+# morphable head: float3 positions get their own stream so the CPU can blend targets into it
+MORPH = [(2, 0, 0), (4, 1, 1), (4, 2, 1), (0x0A, 3, 2), (6, 4, 1), (0x0A, 5, 2)]
 
 # D3DCOLOR byte order: influence k is stored in byte _SLOT[k]
 _SLOT = (2, 1, 0, 3)
@@ -88,6 +90,8 @@ class BufferBuilder:
     def _encode(e, i, positions, uvs, normals, tangents, weights, indices):
         if e.usage == 0:
             p = positions[i]
+            if e.type == 2:
+                return struct.pack("<3f", *p)
             return struct.pack("<4h", *(_clamp16(c / POS_SCALE) for c in p), 1)
         if e.usage == 1:
             return weights[i]

@@ -7,7 +7,7 @@ Tools for getting custom player models into the original **Dead Island** (Chrome
 - [x] **Auto-rigger**: static humanoid `.obj` → rigged Dead Island player model with TPP/FPP skins.
 - [x] Export any model to `.glb` for checking in Blender.
 - [ ] Pack textures and `.mat` materials into game resources (need sample dumps, see below).
-- [ ] Facial morph targets (a custom head currently ships without them).
+- [x] Facial morphs: a custom head gets the template's 43 targets, copied from the nearest template vertex.
 
 Format notes: [docs/FORMAT.md](docs/FORMAT.md).
 
