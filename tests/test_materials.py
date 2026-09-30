@@ -24,6 +24,9 @@ def _template():
                   None, bytes(0xB0)) for i, n in enumerate(BONES)]
     for k, name in enumerate(("body", "head", "head_shadow")):
         mesh = Mesh([k], [[0]], [Lod([3], [], 3, 0, [0])])
+        if name == "body":
+            # like Logan: a second, larger surface with another material (his hands)
+            mesh = Mesh([0, 1], [[0], [0]], [Lod([3, 30], [], 3, 0, [0])])
         nodes.append(Node(len(nodes), name, -1, NODE_MESH, 0, 0, IDENT, IDENT, (0, 0, 0),
                           (0, 0, 0), mesh, bytes(0xB0)))
     mats = [Material("DEFAULT.MAT", 1)] * 3 + [Material("hero_x_body.mat", 1),
@@ -61,14 +64,14 @@ def _model(folder):
 
 class MaterialTests(unittest.TestCase):
 
-    def _build(self, mode):
+    def _build(self, mode, loose=None):
         tm, ts = _template()
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         obj, rig, tex = _model(d)
         out = os.path.join(d, "out")
         stats = build_player(tm, ts, obj, rig, out, textures=tex, material_mode=mode,
-                             log=lambda *a: None)
+                             loose=loose, log=lambda *a: None)
         m = load_msh(os.path.join(out, "hero_x.msh"))
         sk = parse_skin(open(os.path.join(out, "hero_x.Skin"), "rb").read())
         return tm, ts, stats, m, sk, out
@@ -103,6 +106,21 @@ class MaterialTests(unittest.TestCase):
             self.assertEqual(tuple(atlas[int(cv * h), int(cu * w), :3]), col)
         self.assertTrue(os.path.exists(os.path.join(out, "textures", "hero_x_body.dds")))
         self.assertTrue(os.path.exists(os.path.join(out, "textures", "hero_x_head.dds")))
+
+    def test_loose_renames_body_and_head_materials(self):
+        tm, ts, stats, m, sk, out = self._build("template", loose="hero_cj")
+        self.assertEqual([x.name for x in m.materials],
+                         [x.name for x in tm.materials[:3]] + ["hero_cj_body.mat", "hero_cj_head.mat",
+                                                               "shadow_def.mat"])
+        for got, want in zip(sk.skins, ts.skins):
+            self.assertEqual(got.material_map, want.material_map)
+        for stem in ("hero_cj_body", "hero_cj_head"):
+            mat = open(os.path.join(out, "loose", stem + ".mat")).read()
+            self.assertIn(f's_clr = "{stem}.dds"', mat)
+            with open(os.path.join(out, "loose", stem + ".dds"), "rb") as f:
+                hdr = f.read(128)
+            self.assertEqual(hdr[:4], b"DDS ")
+            self.assertEqual(hdr[84:88], b"DXT5")
 
     def test_custom_mode_names_new_materials(self):
         tm, ts, stats, m, sk, out = self._build("custom")

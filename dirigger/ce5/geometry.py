@@ -81,6 +81,8 @@ class BufferBuilder:
                         continue
                     self.vertex += self._encode(e, i, positions, uvs, normals, tangents,
                                                 weights, indices)
+        while len(self.index) % 4:            # the game starts each LOD's indices 4-aligned
+            self.index += b"\0"
         ib_off = len(self.index)
         for tri in surfaces:
             self.index += struct.pack(f"<{len(tri)}H", *tri)

@@ -6,7 +6,7 @@ Tools for getting custom player models into the original **Dead Island** (Chrome
 - [x] Write them. Unmodified game files rebuild byte-for-byte.
 - [x] **Auto-rigger**: static humanoid `.obj` → rigged Dead Island player model with TPP/FPP skins.
 - [x] Export any model to `.glb` for checking in Blender.
-- [ ] Pack textures and `.mat` materials into game resources (need sample dumps, see below).
+- [x] Read and write level `.rpack` files: install a built model (mesh + textures) straight into them, or extract a hero.
 - [x] Facial morphs: a custom head gets the template's 43 targets, copied from the nearest template vertex.
 
 Format notes: [docs/FORMAT.md](docs/FORMAT.md).
@@ -79,6 +79,37 @@ The default build avoids this by only using materials that are already in the ga
 `--custom-materials` (plus `--material slot=name.mat`) only once real `.mat` resources for
 those names are packed into the game.
 
+## Putting the model in the game
+
+Every level `.rpack` carries its own copy of the hero, so every level you want to play needs the
+new model. `install` writes it straight into the packs: the hero's six mesh parts, plus the colour
+textures named after its materials (`hero_logan_body`, `hero_logan_head`), encoded in the game's
+own size and DXT format. Their normal maps are made flat so Logan's creases don't show on your
+model. No other tool or renaming is needed; the first run keeps each original as `.rpack.bak`.
+
+```sh
+python -m dirigger install out_hero_logan "C:\path\to\Dead Island\DI\Data"   # every pack in a folder
+python -m dirigger install out_hero_logan hotel_PC.rpack                         # or single packs
+```
+
+or drag the `out_hero_logan` folder and then the pack(s)/folder onto `install.bat`.
+`--mesh-only` leaves the textures alone. To restore a pack, delete it and remove `.bak` from the copy.
+
+### Loose files instead of editing packs
+
+`--loose hero_cj` renames only the body and head materials in the mesh to `hero_cj_body.mat` /
+`hero_cj_head.mat` and writes `loose/` with those two `.mat` files (for the game's `templates.mtt`,
+shine from `--shine`, default 0) plus their DXT5 `.dds` textures. The names in the mesh, the
+`.mat` files and the textures always match, so nothing needs renaming by hand. This is the setup
+tested in game: the four files go in a folder under `Data`, e.g. `Data\(Character Textures)\Cj`.
+
+```sh
+python autorig.py CJ.obj --texture head=face.png ... --loose hero_cj
+```
+
+To get a template without another tool: `python -m dirigger unpack hotel_PC.rpack hero_logan`
+writes `templates/hero_logan/`.
+
 ## Other commands
 
 ```sh
@@ -86,19 +117,10 @@ python -m dirigger info  hero_logan/hero_logan.msh --bones     # describe a mode
 python -m dirigger gltf  hero_logan/hero_logan.msh logan.glb --skin Logan_FPP
 ```
 
-## Still needed from a game dump
-
-The mesh files are complete. To make the materials work in game, I need raw dumps
-(same tool and settings as the hero dumps) of:
-
-- one hero material, e.g. `hero_logan_body.mat` and its fixup parts
-- one of its textures (all parts)
-- the `.rpack` containing them, so the output can be packed back in
-
 ## Tests
 
 Game files are not included. Point `DIRIGGER_SAMPLES` at a folder containing extracted heroes
-(and optionally an `.obj` to auto-rig):
+(and optionally an `.obj` to auto-rig and a level `.rpack`):
 
 ```sh
 DIRIGGER_SAMPLES=/path/to/samples python -m unittest discover tests

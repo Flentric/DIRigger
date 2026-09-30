@@ -145,3 +145,33 @@ def resize(rgba, w, h):
     top = img[y0][:, x0] * (1 - fx) + img[y0][:, x1] * fx
     bot = img[y1][:, x0] * (1 - fx) + img[y1][:, x1] * fx
     return np.clip(top * (1 - fy) + bot * fy + 0.5, 0, 255).astype(np.uint8)
+
+
+def write_dds_dxt(path, rgba, fmt="dxt1"):
+    """Write a DXT1/DXT5 DDS with a full mip chain (size rounded to powers of two)."""
+    from .dxt import compress
+    h, w = rgba.shape[:2]
+    p2 = lambda n: max(4, 1 << int(np.ceil(np.log2(n))))
+    img = resize(rgba, p2(w), p2(h))
+    h, w = img.shape[:2]
+    levels, cur = [], img.astype(np.float32)
+    while True:
+        lv = np.clip(cur + 0.5, 0, 255).astype(np.uint8)
+        lh, lw = lv.shape[:2]
+        if lh < 4 or lw < 4:
+            lv = np.pad(lv, ((0, max(0, 4 - lh)), (0, max(0, 4 - lw)), (0, 0)), mode="edge")
+        levels.append(compress(lv, fmt))
+        if cur.shape[0] == 1 and cur.shape[1] == 1:
+            break
+        if cur.shape[0] > 1:
+            cur = (cur[0::2] + cur[1::2]) / 2
+        if cur.shape[1] > 1:
+            cur = (cur[:, 0::2] + cur[:, 1::2]) / 2
+    flags = 0x1 | 0x2 | 0x4 | 0x1000 | 0x20000 | 0x80000   # caps height width pixfmt mipcount linearsize
+    pf = struct.pack("<II4sIIIII", 32, 0x4, fmt.upper().encode(), 0, 0, 0, 0, 0)
+    hdr = struct.pack("<4sIIIIIII", b"DDS ", 124, flags, h, w, len(levels[0]), 0, len(levels))
+    hdr += b"\0" * 44 + pf + struct.pack("<IIIII", 0x401008, 0, 0, 0, 0)
+    with open(path, "wb") as f:
+        f.write(hdr)
+        for lv in levels:
+            f.write(lv)

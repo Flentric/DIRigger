@@ -163,3 +163,38 @@ header fields. The game's list is unordered; the writer emits it sorted.
 Mesh node records keep null pointers at +0x94..+0xA0. Morph base data is the head's float3 positions (a copy of vertex stream 0), in Logan's case followed
 by 84 bytes of leftover padding. Each target is `int16 dx, dy, dz` per vertex, stored in a 16-byte
 padded block.
+
+# Level resource packs (`*.rpack`, "RP5L")
+
+Every level pack (`hotel_PC.rpack`, ...) carries its own copy of the player models. All
+little-endian; `dirigger/ce5/rpack.py` rebuilds an unmodified pack byte for byte.
+
+```
+header    u32 magic "RP5L", 0x24, 1, nParts, nSections, nFiles, namesSize, nNames, 0x800
+sections  {u32 type, u32 fileOffset, u32 unpackedSize, u32 packedSize, u32 nParts}[nSections]
+parts     {u8 section, u8 flags, u16 file, u32 offset, u32 unpackedSize, u32 packedSize}[nParts]
+files     {u8 nParts, u8 0, u8 type, u8 1, u32 nameIndex, u32 firstPart}[nFiles]
+names     u32 offset[nNames], then zero-terminated names (no extensions)
+data      sections, each 0x800-aligned in the file
+```
+
+Each part is its own zlib stream (level 9), 0x800-aligned inside its section; the section sizes
+are the sums of its parts' sizes without that padding. The texture-header section is the
+exception: its 80-byte headers share one zlib stream, and their part offsets point into the
+unpacked data (part packedSize 0).
+
+Section type low bytes: `10` .msh, `11` .MeshFixups, `F0` .VertexData, `F1` .IndexData,
+`12` .Skin, `13` .SkinFixups, `20` texture header, `21` texture data, `30`-`33` shaders,
+`40`-`43` animations, `50` particles. File types: `10` mesh, `20` texture, `30` shader,
+`40`/`42` animation, `50` particles. `.mat` materials are not in level packs; the meshes name
+them, and they name textures (`hero_logan_body`, `_nrm`, `_shn`, `_msk`) that are.
+
+## Textures
+
+Header (80 bytes): `u16 width, u16 height, u16 1, u16 1, u32 mipCount, u32 format`, then mip
+sizes/offsets. Format `11` = DXT1, `13` = DXT5 (normal maps: x in alpha, y in green). The data
+parts are: first all mips of 16x16 and below together (largest first), then one part per larger
+mip, smallest first. `hero_logan_body` / `_head` are 1024x1024 DXT1, their `_nrm` 512x512 DXT5.
+
+The `.msh` in the pack differs from some dumps only in the 80 bytes of padding after the head's
+morph base data, which nothing reads.

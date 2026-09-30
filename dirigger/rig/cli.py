@@ -55,6 +55,12 @@ def main(argv=None):
                          "game; the default uses materials the game already has")
     ap.add_argument("--material", action="append", default=[], metavar="SLOT=NAME.mat",
                     help="with --custom-materials: material name for a slot; repeatable")
+    ap.add_argument("--loose", metavar="PREFIX",
+                    help="for loading without editing packs: rename the body/head materials to "
+                         "PREFIX_body.mat / PREFIX_head.mat and write matching .mat files and "
+                         "DXT5 .dds textures to loose/ (e.g. --loose hero_cj)")
+    ap.add_argument("--shine", type=float, default=0.0,
+                    help="f_shn_factor written into loose .mat files (default 0.0)")
     ap.add_argument("--reuse-materials", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
@@ -116,7 +122,9 @@ def main(argv=None):
                   keep_size=args.keep_size or cfg.get("keep_size", False))
 
     stats = build_player(tm, tskin, obj, rig, out, base=base, textures=textures or None,
-                         materials=materials, material_mode="custom" if custom else "template")
+                         materials=materials, material_mode="custom" if custom else "template",
+                         loose=args.loose or cfg.get("loose"),
+                         shine=cfg.get("shine", args.shine))
     written = verify_output(out, base)
     sf = parse_skin(open(os.path.join(out, base + ".Skin"), "rb").read())
     for label, skin_name in (("tpp", next((s.name for s in sf.skins if "tpp" in s.name.lower()), None)),
@@ -130,7 +138,11 @@ def main(argv=None):
     lines += ["", "materials:"]
     for s, mname, tex in stats["materials"]:
         lines.append(f"  {s:8s} -> {mname}   texture: {tex or 'MISSING (set one with --texture ' + s + '=file.png)'}")
-    if stats["material_mode"] == "template":
+    if args.loose or cfg.get("loose"):
+        lines += ["", "Loose files: copy everything in loose/ (the .mat and .dds files) into the game's",
+                  "Data folder where your other loose materials live, and use this mesh. The body and",
+                  "head ask for the .mat names above; everything else is Logan's own material."]
+    elif stats["material_mode"] == "template":
         lines += ["", "The model draws with the template's own materials, so it is visible in game",
                   "straight away (with the template's textures). To see your textures, replace the",
                   "diffuse texture each material above uses with the .dds listed next to it.",

@@ -27,6 +27,17 @@ from ..ce5.skin import SkinFile, SkinPreset, build_skin
 from ..ce5.geometry import BufferBuilder, SKINNED, SHADOW, MORPH, MAX_PALETTE, pack_influences
 from ..rig.transfer import vertex_normals, tangents
 
+# a loose material for the game's templates.mtt (Data/.../*.mat next to its texture)
+LOOSE_MAT = """import "templates.mtt"
+
+sub material()
+{{
+	use mtt_objects(
+	s_clr = "{texture}",
+	f_shn_factor = {shine});
+}}
+"""
+
 # texture regions, decided per UV island from skin weights
 TEX_REGIONS = ("head", "torso", "legs", "feet")
 
@@ -87,12 +98,14 @@ def _split_palettes(tris, tri_bones, limit=MAX_PALETTE):
 
 
 def _main_slot(node):
-    """Material slot of a mesh node's largest surface."""
+    """Material slot of a mesh node's first surface.
+
+    The first surface carries the node's own material (hero_logan_body.mat on `body`,
+    hero_logan_head.mat on `head`); later ones are extras such as hands or eyes, which
+    can cover more triangles than the main one.
+    """
     me = node.mesh
-    if not me or not me.surface_slots:
-        return None
-    counts = me.lods[0].index_counts
-    return me.surface_slots[max(range(len(counts)), key=counts.__getitem__)]
+    return me.surface_slots[0] if me and me.surface_slots else None
 
 
 def template_slot_plan(template_msh, template_skin):
@@ -197,8 +210,20 @@ def transfer_morphs(template_msh, head_positions, falloff=(1.0, 4.0)):
     return Morphs(list(mo.names), list(mo.remap), [], len(P), 0, base, targets), node.mesh.raw_a
 
 
+def _stub_mesh(tnode, buffers):
+    """A template mesh node with nothing to draw: one zero-area triangle, same layout."""
+    lod = tnode.mesh.lods[0]
+    layout = [(e.type, e.usage, e.stream) for e in lod.elements]
+    c = tuple(tnode.aabb_center)
+    pal = [tnode.mesh.palettes[0][0]]
+    w, i = pack_influences([(0, 1.0)])
+    new = buffers.add_lod(layout, [c] * 3, [[0, 1, 2]], [(0.0, 0.0)] * 3, [(0.0, 1.0, 0.0)] * 3,
+                          [(1.0, 0.0, 0.0, 1.0)] * 3, [w] * 3, [i] * 3)
+    return Mesh([tnode.mesh.surface_slots[0]], [pal], [new]), np.array([c] * 3)
+
+
 def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, textures=None,
-                 materials=None, material_mode="template", log=print):
+                 materials=None, material_mode="template", loose=None, shine=0.0, log=print):
     """Write the player model. Returns a dict with paths and statistics.
 
     material_mode:
@@ -207,6 +232,11 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
       "custom"    one new material per texture slot (<base>_<slot>.mat or `materials`).
                   These must be packed into the game as real .mat resources, otherwise
                   the engine has nothing to draw and the model is invisible.
+
+    loose: with "template", a name prefix such as "hero_cj". The template's body and head
+      materials are renamed <loose>_body.mat / <loose>_head.mat (everything else stays the
+      template's), and loose/ gets matching .mat files (for the game's templates.mtt,
+      `shine` as f_shn_factor) and DXT5 .dds textures, for loading without editing packs.
     """
     base = base or os.path.splitext(template_msh.name)[0]
     names = [n.name for n in template_msh.bones]
@@ -274,6 +304,16 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
     if material_mode == "template":
         plan = template_slot_plan(template_msh, template_skin)
         mat_names_of = slot_material_names(template_msh, template_skin)
+        rename = {}                             # template material index -> loose name
+        if loose:
+            ours = {plan["body"]: f"{loose}_body.mat"}
+            if plan["head"] != plan["body"]:
+                ours[plan["head"]] = f"{loose}_head.mat"
+            for tp in template_skin.skins:      # every preset, _pfury included
+                for sl, mi in tp.material_map:
+                    if sl in ours:
+                        rename[mi] = ours[sl]
+            mat_names_of.update(ours)
         # every triangle draws with the template's head or body slot
         tri_out = np.where(is_head, plan["head"], plan["body"])
         body_slot = lambda t: int(tri_out[t])
@@ -287,14 +327,15 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
             label = "head" if tslot == plan["head"] and tslot != plan["body"] else "body"
             tex_jobs.append((label, mat_names_of.get(tslot, f"slot {tslot}"),
                              [slot_names[k] for k in used], tslot))
-            if len(used) > 1:
+            if len(used) > 1 and any(slots[slot_names[k]] for k in used):
                 # each source texture gets a cell in one atlas per template slot
                 cells.update({(tslot, k): x for k, x in zip(used, atlas_layout(len(used))[2])})
 
         def cell_of_tri(t):
             key = (int(tri_out[t]), int(tri_slot[t]))
             return key if key in cells else None
-        mats = list(template_msh.materials)
+        mats = [Material(rename.get(i, m.name), m.flags)
+                for i, m in enumerate(template_msh.materials)]
         slot_count = template_msh.slot_count
         surface_params = list(template_msh.surface_params)
     else:
@@ -304,7 +345,8 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
         cell_of_tri = lambda t: None
         # materials: one DEFAULT per slot (shadow_def for the shadow slot), then ours
         mat_names = [(materials or {}).get(s, f"{base}_{s}.mat") for s in slot_names]
-        mats = [Material("DEFAULT.MAT", 1) for _ in slot_names] + [Material("shadow_def.mat", 1)]
+        # the game's own placeholders are DEFAULT.MAT with flags 0
+        mats = [Material("DEFAULT.MAT", 0) for _ in slot_names] + [Material("shadow_def.mat", 1)]
         mats += [Material(n, 1) for n in mat_names]
         real_index = {s: n_slots + k for k, s in enumerate(slot_names)}
         slot_count = n_slots
@@ -377,13 +419,23 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
         else:
             log("  template has no shadow slot; skipping head_shadow")
 
+    if material_mode == "template":
+        # Keep every mesh node the template has, in its order, so node indices, skins and
+        # anything in the game that looks a node up by name see the same model as before.
+        # Nodes we have no geometry for become a single zero-area triangle.
+        built = {name: (mesh, P) for name, mesh, P in parts}
+        tmpl_names = [n.name for n in template_msh.mesh_nodes]
+        parts = [(n.name,) + (built[n.name] if n.name in built else _stub_mesh(n, buffers))
+                 for n in template_msh.mesh_nodes] + \
+                [p for p in parts if p[0] not in tmpl_names]
+
     # --- nodes ----------------------------------------------------------------
     tmpl_mesh_node = next(n for n in template_msh.nodes if n.type == NODE_MESH)
     nodes = list(template_msh.bones)
     ident = struct.pack("<12f", 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0)
     for name, mesh, P in parts:
         lo, hi = P.min(0), P.max(0)
-        raw = bytearray(tmpl_mesh_node.raw)
+        raw = bytearray((template_msh.node_by_name(name) or tmpl_mesh_node).raw)
         raw[0x00:0x30] = ident
         raw[0x30:0x60] = ident
         raw[0x60:0x78] = struct.pack("<6f", *((lo + hi) / 2), *((hi - lo) / 2))
@@ -413,8 +465,13 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
         SkinPreset(f"{base}_FPP", [], [], [], extra=0x12)]
     for tp in tmpl_presets:
         fpp = "fpp" in tp.name.lower()
-        hide = ["head"] if fpp else ["head_shadow"]
-        hidden = [(node_index[h], 3) for h in hide if h in node_index]
+        if material_mode == "template":
+            tnames = {i: n.name for i, n in enumerate(template_msh.nodes)}
+            hidden = [(node_index[tnames[h]], f) for h, f in tp.hidden
+                      if tnames.get(h) in node_index]
+        else:
+            hide = ["head"] if fpp else ["head_shadow"]
+            hidden = [(node_index[h], 3) for h in hide if h in node_index]
         presets.append(SkinPreset(tp.name, tp.material_map if matmap is None else matmap, hidden,
                                   tp.params if params is None else params, tp.flags, tp.extra))
     skin_bytes, skinfix_bytes = build_skin(SkinFile(presets))
@@ -427,31 +484,37 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
         with open(os.path.join(out_dir, base + ext), "wb") as f:
             f.write(data)
 
-    from ..io.png import read_png, write_dds, write_png
+    from ..io.png import read_png, write_dds, write_dds_dxt, write_png
     tex_dir = os.path.join(out_dir, "textures")
     os.makedirs(tex_dir, exist_ok=True)
+    loose_dir = os.path.join(out_dir, "loose")
+    if loose:
+        os.makedirs(loose_dir, exist_ok=True)
     tex_report = []
     for label, mname, used, tslot in tex_jobs:
         stem = os.path.splitext(os.path.basename(mname))[0].replace(" ", "_")
         srcs = [slots[s] if slots[s] and os.path.exists(slots[s]) else None for s in used]
+        img, desc = None, None
         if len(used) > 1:
             imgs = [read_png(p) if p else None for p in srcs]
-            if not any(i is not None for i in imgs):
-                tex_report.append((label, mname, None))
-                continue
-            atlas = build_atlas(imgs)
-            write_png(os.path.join(tex_dir, stem + ".png"), atlas)
-            write_dds(os.path.join(tex_dir, stem + ".dds"), atlas)
-            desc = "atlas of " + ", ".join(
-                f"{s}={os.path.basename(p) if p else 'MISSING'}" for s, p in zip(used, srcs))
-            tex_report.append((label, mname, f"textures/{stem}.dds ({desc})"))
+            if any(i is not None for i in imgs):
+                img = build_atlas(imgs)
+                desc = "atlas of " + ", ".join(
+                    f"{s}={os.path.basename(p) if p else 'MISSING'}" for s, p in zip(used, srcs))
         elif srcs[0]:
-            src = srcs[0]
-            shutil.copyfile(src, os.path.join(tex_dir, stem + os.path.splitext(src)[1].lower()))
-            write_dds(os.path.join(tex_dir, stem + ".dds"), read_png(src))
-            tex_report.append((label, mname, f"textures/{stem}.dds ({os.path.basename(src)})"))
-        else:
+            img, desc = read_png(srcs[0]), os.path.basename(srcs[0])
+        if img is None:
             tex_report.append((label, mname, None))
+            continue
+        write_png(os.path.join(tex_dir, stem + ".png"), img)
+        write_dds(os.path.join(tex_dir, stem + ".dds"), img)
+        where = f"textures/{stem}.dds"
+        if loose:
+            write_dds_dxt(os.path.join(loose_dir, stem + ".dds"), img, "dxt5")
+            with open(os.path.join(loose_dir, stem + ".mat"), "w", newline="\r\n") as fh:
+                fh.write(LOOSE_MAT.format(texture=stem + ".dds", shine=shine))
+            where = f"loose/{stem}.dds + loose/{stem}.mat"
+        tex_report.append((label, mname, f"{where} ({desc})"))
 
     stats = {
         "base": base, "out_dir": out_dir, "material_mode": material_mode,
