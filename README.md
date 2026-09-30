@@ -17,7 +17,22 @@ Needs Python 3.8+ and numpy; `autorig.bat` installs numpy for you.
 
 1. Put a raw dump of the hero you want to replace in `templates/hero_logan/`: `hero_logan.msh`,
    `.MeshFixups`, `.VertexData`, `.IndexData`, `.Skin`, `.SkinFixups`. See [templates/README.md](templates/README.md).
-2. Drag your `.obj` onto **`autorig.bat`**, or run:
+2. Drag your `.obj` onto **`autorig.bat`**. It asks what you want:
+
+   ```
+   What do you want to make?
+     1) Loose files: add it as a new character (no pack editing)
+     2) Replace Logan inside the level .rpack files
+     3) Just build the files (I'll install them myself)
+   ```
+
+   It guesses the textures from the `.png` names next to the model (`face` → head, `vest` →
+   torso, ...) and lets you change them. With no template yet, drag any level `.rpack` into the
+   window and Logan is taken from it. For option 2, drag the game's `Data` folder (or some
+   `.rpack` files) into the window. Your answers are saved in `<model>.json`, so the next run
+   is just Enter, Enter.
+
+   Or run it with options, which skips the questions:
 
    ```sh
    python autorig.py CJ.obj --texture head=face.png --texture torso=vest.png \
