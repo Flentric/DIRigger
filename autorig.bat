@@ -1,5 +1,5 @@
 @echo off
-rem DIRigger auto-rigger. Drag an .obj onto this file, or run:
+rem DIRigger auto-rigger. Drag an .obj onto this file (it asks what to make), or run:
 rem   autorig.bat model.obj [--template path\to\hero_logan.msh] [--texture head=face.png ...]
 rem Run "autorig.bat --help" for all options.
 setlocal
@@ -21,13 +21,18 @@ if errorlevel 1 (
     %PY% -m pip install --user numpy || (echo Could not install numpy. & pause & exit /b 1)
 )
 
-if "%~1"=="" (
-    %PY% autorig.py --help
-    pause
-    exit /b 0
-)
+if not "%~1"=="" goto run
+echo Drag your .obj model into this window, then press Enter.
+echo (Or type --help for all the command-line options.)
+set /p "OBJ=> "
+if not defined OBJ exit /b 0
+%PY% autorig.py %OBJ%
+goto done
 
+:run
 %PY% autorig.py %*
+
+:done
 if errorlevel 1 (
     echo.
     echo Auto-rig failed, see the message above.
