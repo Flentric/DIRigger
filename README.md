@@ -29,7 +29,8 @@ Needs Python 3.8+ and numpy; `autorig.bat` installs numpy for you.
    It guesses the textures from the `.png` names next to the model (`face` → head, `vest` →
    torso, ...) and lets you change them. With no template yet, drag any level `.rpack` into the
    window and Logan is taken from it. For option 2, drag the game's `Data` folder (or some
-   `.rpack` files) into the window. Your answers are saved in `<model>.json`, so the next run
+   `.rpack` files) into the window; it lists every level pack it finds and asks which ones to
+   change (`2`, `1,4`, `2-5` or `all`), so you can test with a single level first. Your answers are saved in `<model>.json`, so the next run
    is just Enter, Enter.
 
    Or run it with options, which skips the questions:

@@ -1,6 +1,6 @@
 import unittest
 
-from dirigger.rig.wizard import guess_textures, _paths
+from dirigger.rig.wizard import guess_textures, _paths, pick
 
 
 class WizardTests(unittest.TestCase):
@@ -14,6 +14,14 @@ class WizardTests(unittest.TestCase):
         self.assertEqual(_paths('"C:\\Games\\Dead Island\\DI\\Data" D:\\x.rpack'),
                          ["C:\\Games\\Dead Island\\DI\\Data", "D:\\x.rpack"])
         self.assertEqual(_paths("  "), [])
+
+    def test_pick_packs(self):
+        self.assertEqual(pick("all", 3), [0, 1, 2])
+        self.assertEqual(pick("2", 3), [1])
+        self.assertEqual(pick("1, 3", 3), [0, 2])
+        self.assertEqual(pick("2-3", 5), [1, 2])
+        self.assertEqual(pick("4", 3), [])
+        self.assertEqual(pick("x", 3), [])
 
 
 if __name__ == "__main__":

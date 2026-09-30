@@ -50,6 +50,38 @@ def guess_textures(pngs):
     return out
 
 
+def find_rpacks(paths):
+    """.rpack files from dragged files and folders (folders searched with subfolders)."""
+    out = []
+    for p in paths:
+        if os.path.isdir(p):
+            for root, _, files in os.walk(p):
+                out += [os.path.join(root, f) for f in sorted(files) if f.lower().endswith(".rpack")]
+        elif p.lower().endswith(".rpack") and os.path.isfile(p):
+            out.append(p)
+    seen = set()
+    return [p for p in out if not (p in seen or seen.add(p))]
+
+
+def pick(answer, n):
+    """'all', '3', '1,4', '2-5' -> sorted 0-based indices, or [] if it doesn't make sense."""
+    a = answer.strip().lower()
+    if a in ("all", "a", "*"):
+        return list(range(n))
+    out = set()
+    for part in a.replace(" ", ",").split(","):
+        if not part:
+            continue
+        lo, _, hi = part.partition("-")
+        if not lo.isdigit() or (hi and not hi.isdigit()):
+            return []
+        lo, hi = int(lo), int(hi or lo)
+        if not 1 <= lo <= hi <= n:
+            return []
+        out.update(range(lo - 1, hi))
+    return sorted(out)
+
+
 class Wizard:
     def __init__(self, obj_path, ask=input, say=print):
         self.obj = os.path.abspath(obj_path)
@@ -136,16 +168,26 @@ class Wizard:
         if saved and all(os.path.exists(p) for p in saved):
             self.say("\nLevel packs last time:")
             for p in saved:
-                self.say(f"  {p}")
+                self.say(f"  {os.path.basename(p)}")
             if self._q("Use these again? (y/n)", "y").lower().startswith("y"):
                 return saved
-        self.say("\nDrag the game's Data folder (every level) or some .rpack files here.")
+        self.say("\nDrag the game's Data folder or some .rpack files here.")
         while True:
-            a = _paths(self.ask("Then press Enter: "))
-            ok = [p for p in a if os.path.isdir(p) or p.lower().endswith(".rpack")]
-            if ok and all(os.path.exists(p) for p in ok):
-                return ok
-            self.say("  Couldn't find those; drag the folder or .rpack files again.")
+            found = find_rpacks(_paths(self.ask("Then press Enter: ")))
+            if found:
+                break
+            self.say("  No .rpack files there; drag the folder or .rpack files again.")
+        if len(found) == 1:
+            return found
+        self.say("\nLevel packs found:")
+        for i, p in enumerate(found, 1):
+            self.say(f"  {i:2d}) {os.path.basename(p)}")
+        while True:
+            picked = pick(self._q("Which ones? A number, several like 1,4 or 2-5, or all",
+                                  "all"), len(found))
+            if picked:
+                return [found[i] for i in picked]
+            self.say(f"  Type numbers from 1 to {len(found)}, or all.")
 
     # --- run --------------------------------------------------------------------
     def run(self):
