@@ -95,6 +95,17 @@ python -m dirigger install out_hero_logan hotel_PC.rpack                        
 or drag the `out_hero_logan` folder and then the pack(s)/folder onto `install.bat`.
 `--mesh-only` leaves the textures alone. To restore a pack, delete it and remove `.bak` from the copy.
 
+### Loose files instead of editing packs
+
+`--loose hero_cj` renames only the body and head materials in the mesh to `hero_cj_body.mat` /
+`hero_cj_head.mat` and writes `loose/` with those two `.mat` files (for the game's `templates.mtt`,
+shine from `--shine`, default 0.1) plus their DXT1 `.dds` textures. The names in the mesh, the
+`.mat` files and the textures always match, so nothing needs renaming by hand.
+
+```sh
+python autorig.py CJ.obj --texture head=face.png ... --loose hero_cj
+```
+
 To get a template without another tool: `python -m dirigger unpack hotel_PC.rpack hero_logan`
 writes `templates/hero_logan/`.
 
