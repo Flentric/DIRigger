@@ -58,9 +58,9 @@ def main(argv=None):
     ap.add_argument("--loose", metavar="PREFIX",
                     help="for loading without editing packs: rename the body/head materials to "
                          "PREFIX_body.mat / PREFIX_head.mat and write matching .mat files and "
-                         "DXT .dds textures to loose/ (e.g. --loose hero_cj)")
-    ap.add_argument("--shine", type=float, default=0.1,
-                    help="f_shn_factor written into loose .mat files (default 0.1)")
+                         "DXT5 .dds textures to loose/ (e.g. --loose hero_cj)")
+    ap.add_argument("--shine", type=float, default=0.0,
+                    help="f_shn_factor written into loose .mat files (default 0.0)")
     ap.add_argument("--reuse-materials", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 

@@ -223,7 +223,7 @@ def _stub_mesh(tnode, buffers):
 
 
 def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, textures=None,
-                 materials=None, material_mode="template", loose=None, shine=0.1, log=print):
+                 materials=None, material_mode="template", loose=None, shine=0.0, log=print):
     """Write the player model. Returns a dict with paths and statistics.
 
     material_mode:
@@ -236,7 +236,7 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
     loose: with "template", a name prefix such as "hero_cj". The template's body and head
       materials are renamed <loose>_body.mat / <loose>_head.mat (everything else stays the
       template's), and loose/ gets matching .mat files (for the game's templates.mtt,
-      `shine` as f_shn_factor) and DXT1 .dds textures, for loading without editing packs.
+      `shine` as f_shn_factor) and DXT5 .dds textures, for loading without editing packs.
     """
     base = base or os.path.splitext(template_msh.name)[0]
     names = [n.name for n in template_msh.bones]
@@ -510,7 +510,7 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
         write_dds(os.path.join(tex_dir, stem + ".dds"), img)
         where = f"textures/{stem}.dds"
         if loose:
-            write_dds_dxt(os.path.join(loose_dir, stem + ".dds"), img, "dxt1")
+            write_dds_dxt(os.path.join(loose_dir, stem + ".dds"), img, "dxt5")
             with open(os.path.join(loose_dir, stem + ".mat"), "w", newline="\r\n") as fh:
                 fh.write(LOOSE_MAT.format(texture=stem + ".dds", shine=shine))
             where = f"loose/{stem}.dds + loose/{stem}.mat"

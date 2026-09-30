@@ -120,7 +120,7 @@ class MaterialTests(unittest.TestCase):
             with open(os.path.join(out, "loose", stem + ".dds"), "rb") as f:
                 hdr = f.read(128)
             self.assertEqual(hdr[:4], b"DDS ")
-            self.assertEqual(hdr[84:88], b"DXT1")
+            self.assertEqual(hdr[84:88], b"DXT5")
 
     def test_custom_mode_names_new_materials(self):
         tm, ts, stats, m, sk, out = self._build("custom")

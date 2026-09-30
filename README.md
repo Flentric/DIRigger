@@ -99,8 +99,9 @@ or drag the `out_hero_logan` folder and then the pack(s)/folder onto `install.ba
 
 `--loose hero_cj` renames only the body and head materials in the mesh to `hero_cj_body.mat` /
 `hero_cj_head.mat` and writes `loose/` with those two `.mat` files (for the game's `templates.mtt`,
-shine from `--shine`, default 0.1) plus their DXT1 `.dds` textures. The names in the mesh, the
-`.mat` files and the textures always match, so nothing needs renaming by hand.
+shine from `--shine`, default 0) plus their DXT5 `.dds` textures. The names in the mesh, the
+`.mat` files and the textures always match, so nothing needs renaming by hand. This is the setup
+tested in game: the four files go in a folder under `Data`, e.g. `Data\(Character Textures)\Cj`.
 
 ```sh
 python autorig.py CJ.obj --texture head=face.png ... --loose hero_cj
