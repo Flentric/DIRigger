@@ -95,6 +95,35 @@ class SampleTests(unittest.TestCase):
                         self.assertLessEqual(abs(pos[a] - c[a]), h[a] + 0.2, (p, n.name))
 
 
+RPACKS = sorted(glob.glob(os.path.join(SAMPLES, "**", "*.rpack"), recursive=True)) if SAMPLES else []
+
+
+@unittest.skipUnless(RPACKS, "put a level .rpack in DIRIGGER_SAMPLES to run rpack tests")
+class RpackTests(unittest.TestCase):
+
+    def test_rpack_roundtrip(self):
+        from dirigger.ce5.rpack import load_rpack, build_rpack
+        for p in RPACKS:
+            with open(p, "rb") as f:
+                data = f.read()
+            self.assertEqual(build_rpack(load_rpack(p)), data, p)
+
+    def test_replace_mesh_part(self):
+        from dirigger.ce5.rpack import parse_rpack, build_rpack
+        for p in RPACKS:
+            with open(p, "rb") as f:
+                rp = parse_rpack(f.read())
+            fi = rp.find("hero_logan", 0x10)
+            if fi is None:
+                continue
+            parts = rp.mesh_parts(fi)
+            rp.replace(parts[".Skin"], b"x" * 1000)
+            again = parse_rpack(build_rpack(rp))
+            self.assertEqual(again.part_data(again.mesh_parts(fi)[".Skin"]), b"x" * 1000)
+            self.assertEqual(again.part_data(again.mesh_parts(fi)[".msh"]),
+                             rp.part_data(parts[".msh"]))
+
+
 OBJS = sorted(glob.glob(os.path.join(SAMPLES, "**", "*.obj"), recursive=True)) if SAMPLES else []
 LOGAN = [p for p in MSHS if os.path.basename(p).lower() == "hero_logan.msh"]
 
