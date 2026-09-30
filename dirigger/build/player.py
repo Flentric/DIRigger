@@ -216,27 +216,44 @@ def face_landmarks(P):
     chin = ys[front].min()
     if not (chin < nose_y < crown):
         return None
-    return {"chin": chin, "nose": nose_y, "crown": crown, "nose_z": nose_z,
-            "cx": cx, "width": width, "depth": depth}
+    out = {"chin": chin, "nose": nose_y, "crown": crown, "nose_z": nose_z,
+           "cx": cx, "width": width, "depth": depth}
+    mouth = _mouth_line(P, out)
+    if mouth is not None:
+        out["mouth"] = mouth
+    return out
+
+
+def _mouth_line(P, lm):
+    """Height of the mouth: where the lip vertices bunch up between nose and chin."""
+    span = lm["nose"] - lm["chin"]
+    lo, hi = lm["chin"] + 0.25 * span, lm["nose"] - 0.2 * span
+    sel = ((np.abs(P[:, 0] - lm["cx"]) < 0.25 * lm["width"])
+           & (P[:, 2] > lm["nose_z"] - 0.3 * lm["depth"])
+           & (P[:, 1] > lo) & (P[:, 1] < hi))
+    if sel.sum() < 6:
+        return None
+    ys = np.arange(lo, hi, 0.05)
+    density = np.exp(-((ys[:, None] - P[sel, 1][None, :]) / 0.3) ** 2).sum(1)
+    return float(ys[density.argmax()])
 
 
 def align_face(P, src, dst):
     """Move head points P (landmarks `src`) onto a head with landmarks `dst`.
 
-    Heights map piecewise-linearly so chin, nose and crown line up; width and depth
+    Heights map piecewise-linearly so chin, mouth, nose and crown line up; width and depth
     are scaled, and the nose tips meet. Returns (mapped points, per-point axis
     scales) so deltas can be carried back with 1/scale.
     """
     P = np.asarray(P, float)
-    ks = ("chin", "nose", "crown")
-    xs = [src[k] for k in ks]
-    ys = [dst[k] for k in ks]
-    y = np.interp(P[:, 1], xs, ys)
-    below, above = P[:, 1] < xs[0], P[:, 1] > xs[2]
-    y[below] = ys[0] + (P[below, 1] - xs[0]) * (ys[1] - ys[0]) / (xs[1] - xs[0])
-    y[above] = ys[2] + (P[above, 1] - xs[2]) * (ys[2] - ys[1]) / (xs[2] - xs[1])
-    sy = np.where(P[:, 1] < xs[1], (ys[1] - ys[0]) / (xs[1] - xs[0]),
-                  (ys[2] - ys[1]) / (xs[2] - xs[1]))
+    ks = ["chin", "mouth", "nose", "crown"] if "mouth" in src and "mouth" in dst \
+        else ["chin", "nose", "crown"]
+    xs = np.array([src[k] for k in ks])
+    ys = np.array([dst[k] for k in ks])
+    slopes = np.diff(ys) / np.diff(xs)
+    seg = np.clip(np.searchsorted(xs, P[:, 1]) - 1, 0, len(slopes) - 1)
+    y = ys[seg] + (P[:, 1] - xs[seg]) * slopes[seg]     # piecewise linear, extended at the ends
+    sy = slopes[seg]
     sx = dst["width"] / src["width"]
     sz = dst["depth"] / src["depth"]
     x = dst["cx"] + (P[:, 0] - src["cx"]) * sx
@@ -245,13 +262,15 @@ def align_face(P, src, dst):
     return np.stack([x, y, z], 1), scale
 
 
-def transfer_morphs(template_msh, head_positions, falloff=(1.0, 4.0)):
+def transfer_morphs(template_msh, head_positions, falloff=(1.0, 4.0), head_normals=None):
     """Give a new head the template head's facial morph targets.
 
-    The new head is first lined up with the template head by chin, nose and crown
+    The new head is first lined up with the template head by chin, mouth, nose and crown
     (faces differ in proportion, and a plain overlap puts the template's mouth on
     the new chin). Each new vertex then copies the per-target delta of the nearest
-    template head vertex, fading to zero between falloff[0] and falloff[1] cm away.
+    template head vertex on the same side of the mouth line and not facing the
+    opposite way (given `head_normals`), fading to zero between falloff[0] and
+    falloff[1] cm away.
     Returns (Morphs, raw A record) or None when the template head has no morphs.
     """
     node = template_msh.node_by_name("head")
@@ -262,16 +281,58 @@ def transfer_morphs(template_msh, head_positions, falloff=(1.0, 4.0)):
     deltas = np.stack([np.frombuffer(t, np.int16).reshape(-1, 3) for t in mo.targets])
     P = np.asarray(head_positions, float)
     src, dst = face_landmarks(P), face_landmarks(tpos)
+    if dst:
+        # the template's own lip-corner targets say exactly where its mouth is
+        corners = [n for n in mo.names if "corner" in n.lower()]
+        if corners:
+            ys = []
+            for n in corners:
+                d = np.linalg.norm(deltas[mo.names.index(n)].astype(float), axis=1)
+                ys.append(tpos[d > 0.5 * d.max(), 1].mean())
+            dst["mouth"] = float(np.mean(ys))
     if src and dst:
         Q, scale = align_face(P, src, dst)
     else:
         Q, scale = P, np.ones_like(P)
+    unit = lambda v: v / np.maximum(np.linalg.norm(v, axis=1, keepdims=True), 1e-9)
+    N = tn = None
+    if head_normals is not None:
+        td = template_msh.decode_lod(node.mesh.lods[0])
+        if len(td["normals"]) == len(tpos):
+            N, tn = unit(np.asarray(head_normals, float)), unit(np.array(td["normals"]))
+    # Around the mouth, points above the mouth line only copy from above the template's
+    # mouth line and points below only from below, so the upper lip stays put and the
+    # lower lip and jaw drop when the mouth opens.
+    # Right at the line the lips' inner surfaces overlap in height, so there the way a
+    # point faces decides: facing up is the top of the lower lip, facing down the
+    # underside of the upper lip.
+    side = t_side = None
+    if src and dst and "mouth" in src and "mouth" in dst:
+        def lip_side(pts, nrm, lm):
+            s = np.sign(pts[:, 1] - lm["mouth"] - 1e-3)
+            if nrm is not None:
+                seam = np.abs(pts[:, 1] - lm["mouth"]) < 0.08 * (lm["nose"] - lm["chin"])
+                s = np.where(seam & (nrm[:, 1] > 0.5), -1, s)
+                s = np.where(seam & (nrm[:, 1] < -0.5), 1, s)
+            return s
+        zone = 0.2 * (src["nose"] - src["chin"])
+        in_zone = ((np.abs(P[:, 1] - src["mouth"]) < 2.5 * zone)
+                   & (np.abs(P[:, 0] - src["cx"]) < 0.3 * src["width"]))
+        side = np.where(in_zone, lip_side(P, N, src), 0)
+        t_side = lip_side(tpos, tn, dst)
     near = np.zeros(len(P), int)
     dist = np.zeros(len(P))
     for s in range(0, len(P), 512):
         d = np.linalg.norm(Q[s:s + 512, None, :] - tpos[None, :, :], axis=2)
-        near[s:s + 512] = d.argmin(1)
-        dist[s:s + 512] = d.min(1)
+        pick = d.copy()
+        if N is not None:                     # never points facing the opposite way
+            pick += np.where(N[s:s + 512] @ tn.T < -0.2, 100.0, 0.0)
+        if side is not None:
+            sd = side[s:s + 512, None]
+            pick += np.where((sd != 0) & (sd != t_side[None, :]), 100.0, 0.0)
+        k = pick.argmin(1)
+        near[s:s + 512] = k
+        dist[s:s + 512] = d[np.arange(len(k)), k]
     lo, hi = falloff
     fade = np.clip((hi - dist) / (hi - lo), 0.0, 1.0)
     moved = deltas[:, near, :] / scale[None] * fade[None, :, None]
@@ -471,7 +532,7 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
         P = np.array(positions)
         mesh = Mesh(slots_out, pals, [lod])
         if morph:
-            res = transfer_morphs(template_msh, P)
+            res = transfer_morphs(template_msh, P, head_normals=np.array(nrm))
             if res:
                 mesh.morphs, mesh.raw_a = res
         return mesh, P
