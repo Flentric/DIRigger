@@ -24,6 +24,9 @@ def _template():
                   None, bytes(0xB0)) for i, n in enumerate(BONES)]
     for k, name in enumerate(("body", "head", "head_shadow")):
         mesh = Mesh([k], [[0]], [Lod([3], [], 3, 0, [0])])
+        if name == "body":
+            # like Logan: a second, larger surface with another material (his hands)
+            mesh = Mesh([0, 1], [[0], [0]], [Lod([3, 30], [], 3, 0, [0])])
         nodes.append(Node(len(nodes), name, -1, NODE_MESH, 0, 0, IDENT, IDENT, (0, 0, 0),
                           (0, 0, 0), mesh, bytes(0xB0)))
     mats = [Material("DEFAULT.MAT", 1)] * 3 + [Material("hero_x_body.mat", 1),

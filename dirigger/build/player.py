@@ -87,12 +87,14 @@ def _split_palettes(tris, tri_bones, limit=MAX_PALETTE):
 
 
 def _main_slot(node):
-    """Material slot of a mesh node's largest surface."""
+    """Material slot of a mesh node's first surface.
+
+    The first surface carries the node's own material (hero_logan_body.mat on `body`,
+    hero_logan_head.mat on `head`); later ones are extras such as hands or eyes, which
+    can cover more triangles than the main one.
+    """
     me = node.mesh
-    if not me or not me.surface_slots:
-        return None
-    counts = me.lods[0].index_counts
-    return me.surface_slots[max(range(len(counts)), key=counts.__getitem__)]
+    return me.surface_slots[0] if me and me.surface_slots else None
 
 
 def template_slot_plan(template_msh, template_skin):
@@ -304,7 +306,8 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
         cell_of_tri = lambda t: None
         # materials: one DEFAULT per slot (shadow_def for the shadow slot), then ours
         mat_names = [(materials or {}).get(s, f"{base}_{s}.mat") for s in slot_names]
-        mats = [Material("DEFAULT.MAT", 1) for _ in slot_names] + [Material("shadow_def.mat", 1)]
+        # the game's own placeholders are DEFAULT.MAT with flags 0
+        mats = [Material("DEFAULT.MAT", 0) for _ in slot_names] + [Material("shadow_def.mat", 1)]
         mats += [Material(n, 1) for n in mat_names]
         real_index = {s: n_slots + k for k, s in enumerate(slot_names)}
         slot_count = n_slots
