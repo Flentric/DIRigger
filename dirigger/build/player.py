@@ -181,13 +181,78 @@ def build_atlas(images, max_size=4096):
     return atlas
 
 
+def face_landmarks(P):
+    """Chin bottom, nose tip and crown of a head (cm, game space: +Y up, face towards +Z).
+
+    Read from the front profile (the most forward point at each height, near the
+    middle of the face). Returns a dict, or None when the profile can't be read.
+    """
+    P = np.asarray(P, float)
+    cx = np.median(P[:, 0])
+    width = np.ptp(P[:, 0])
+    depth = np.ptp(P[:, 2])
+    mid = np.abs(P[:, 0] - cx) < max(0.6, width * 0.04)
+    if mid.sum() < 10:
+        return None
+    ys = np.arange(P[:, 1].min(), P[:, 1].max() + 0.5, 0.5)
+    prof = np.full(len(ys), np.nan)
+    for i, y in enumerate(ys):
+        m = mid & (np.abs(P[:, 1] - y) < 0.6)
+        if m.any():
+            prof[i] = P[m, 2].max()
+    crown = P[:, 1].max()
+    low = P[:, 1].min()
+    # nose tip: most forward point in the lower 70% of the head
+    band = (ys < low + 0.7 * (crown - low)) & ~np.isnan(prof)
+    if not band.any():
+        return None
+    k = np.nanargmax(np.where(band, prof, -np.inf))
+    nose_y, nose_z = ys[k], prof[k]
+    # chin bottom: lowest height below the nose whose profile is still near the front
+    # (below it the profile drops back to the neck)
+    front = (ys < nose_y) & (prof > nose_z - 0.25 * depth)
+    if not front.any():
+        return None
+    chin = ys[front].min()
+    if not (chin < nose_y < crown):
+        return None
+    return {"chin": chin, "nose": nose_y, "crown": crown, "nose_z": nose_z,
+            "cx": cx, "width": width, "depth": depth}
+
+
+def align_face(P, src, dst):
+    """Move head points P (landmarks `src`) onto a head with landmarks `dst`.
+
+    Heights map piecewise-linearly so chin, nose and crown line up; width and depth
+    are scaled, and the nose tips meet. Returns (mapped points, per-point axis
+    scales) so deltas can be carried back with 1/scale.
+    """
+    P = np.asarray(P, float)
+    ks = ("chin", "nose", "crown")
+    xs = [src[k] for k in ks]
+    ys = [dst[k] for k in ks]
+    y = np.interp(P[:, 1], xs, ys)
+    below, above = P[:, 1] < xs[0], P[:, 1] > xs[2]
+    y[below] = ys[0] + (P[below, 1] - xs[0]) * (ys[1] - ys[0]) / (xs[1] - xs[0])
+    y[above] = ys[2] + (P[above, 1] - xs[2]) * (ys[2] - ys[1]) / (xs[2] - xs[1])
+    sy = np.where(P[:, 1] < xs[1], (ys[1] - ys[0]) / (xs[1] - xs[0]),
+                  (ys[2] - ys[1]) / (xs[2] - xs[1]))
+    sx = dst["width"] / src["width"]
+    sz = dst["depth"] / src["depth"]
+    x = dst["cx"] + (P[:, 0] - src["cx"]) * sx
+    z = dst["nose_z"] + (P[:, 2] - src["nose_z"]) * sz
+    scale = np.stack([np.full(len(P), sx), sy, np.full(len(P), sz)], 1)
+    return np.stack([x, y, z], 1), scale
+
+
 def transfer_morphs(template_msh, head_positions, falloff=(1.0, 4.0)):
     """Give a new head the template head's facial morph targets.
 
-    Each new vertex copies the per-target delta of the nearest template head
-    vertex (both are in the template's bind pose, in cm), fading to zero
-    between falloff[0] and falloff[1] cm away. Returns (Morphs, raw A record)
-    or None when the template head has no morphs.
+    The new head is first lined up with the template head by chin, nose and crown
+    (faces differ in proportion, and a plain overlap puts the template's mouth on
+    the new chin). Each new vertex then copies the per-target delta of the nearest
+    template head vertex, fading to zero between falloff[0] and falloff[1] cm away.
+    Returns (Morphs, raw A record) or None when the template head has no morphs.
     """
     node = template_msh.node_by_name("head")
     if node is None or node.mesh.morphs is None:
@@ -196,15 +261,21 @@ def transfer_morphs(template_msh, head_positions, falloff=(1.0, 4.0)):
     tpos = np.frombuffer(mo.base_data[:mo.vertex_count * 12], np.float32).reshape(-1, 3)
     deltas = np.stack([np.frombuffer(t, np.int16).reshape(-1, 3) for t in mo.targets])
     P = np.asarray(head_positions, float)
+    src, dst = face_landmarks(P), face_landmarks(tpos)
+    if src and dst:
+        Q, scale = align_face(P, src, dst)
+    else:
+        Q, scale = P, np.ones_like(P)
     near = np.zeros(len(P), int)
     dist = np.zeros(len(P))
     for s in range(0, len(P), 512):
-        d = np.linalg.norm(P[s:s + 512, None, :] - tpos[None, :, :], axis=2)
+        d = np.linalg.norm(Q[s:s + 512, None, :] - tpos[None, :, :], axis=2)
         near[s:s + 512] = d.argmin(1)
         dist[s:s + 512] = d.min(1)
     lo, hi = falloff
     fade = np.clip((hi - dist) / (hi - lo), 0.0, 1.0)
-    new = np.round(deltas[:, near, :] * fade[None, :, None]).astype(np.int16)
+    moved = deltas[:, near, :] / scale[None] * fade[None, :, None]
+    new = np.clip(np.round(moved), -32768, 32767).astype(np.int16)
     targets = [new[k].tobytes() for k in range(len(mo.targets))]
     base = np.asarray(P, np.float32).tobytes()
     return Morphs(list(mo.names), list(mo.remap), [], len(P), 0, base, targets), node.mesh.raw_a
