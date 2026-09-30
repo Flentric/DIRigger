@@ -59,15 +59,30 @@ Needs Python 3.8+ and numpy; `autorig.bat` installs numpy for you.
    - `head`: hidden in first person.
    - `head_shadow`: a shadow-only copy of the head, shown only in first person, so the player still casts a full shadow.
    - Surfaces are split to at most 45 bones each.
-6. **Materials.** If the OBJ has several materials, each becomes a slot. With a single material
-   (like the CJ rip), UV islands are sorted into head / torso / legs / feet from the weights and
-   given the textures you listed. `--material torso=hero_logan_body.mat` reuses an existing game
-   material instead of the new `hero_logan_<slot>.mat` names.
+6. **Materials.** By default the model draws with the **template's own material slots**
+   (Logan's body material for the body, his head material for the head, `shadow_def.mat` for
+   the head shadow). The material table and the skins' material maps are copied from the
+   template unchanged, so every material the model names already exists in the game.
+   Textures that share one material (torso, legs, feet) are packed into a single atlas and
+   the UVs are moved into its cells. `report.txt` lists which `.dds` goes with which material:
+   replace that material's diffuse texture with it to see your model's textures.
+
+### Invisible model?
+
+A material name the game can't find draws nothing. Older builds (and `--custom-materials`
+now) named new materials such as `hero_logan_torso.mat` that don't exist in the game's
+resource packs, so every surface using them was invisible. Only the head shadow still
+showed, because it uses `shadow_def.mat`, which the game has. That's why you could see the
+head moving only in the shadow.
+
+The default build avoids this by only using materials that are already in the game. Use
+`--custom-materials` (plus `--material slot=name.mat`) only once real `.mat` resources for
+those names are packed into the game.
 
 ## Other commands
 
 ```sh
-python -m dirigger info  hero_logan/hero_logan.msh --bones     # describe a model
+python -m dirigger info  hero_logan/hero_logan.msh --bones     # describe a model, its materials and skins
 python -m dirigger gltf  hero_logan/hero_logan.msh logan.glb --skin Logan_FPP
 ```
 

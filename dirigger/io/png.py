@@ -113,3 +113,35 @@ def write_dds(path, rgba, mipmaps=True):
         f.write(hdr)
         for lv in levels:
             f.write(lv[..., [2, 1, 0, 3]].tobytes())
+
+
+def write_png(path, rgba):
+    """Write an 8-bit RGBA PNG."""
+    h, w = rgba.shape[:2]
+    raw = b"".join(b"\0" + rgba[y].tobytes() for y in range(h))
+
+    def chunk(typ, data):
+        return (struct.pack(">I", len(data)) + typ + data
+                + struct.pack(">I", zlib.crc32(typ + data) & 0xFFFFFFFF))
+
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+        f.write(chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)))
+        f.write(chunk(b"IDAT", zlib.compress(raw, 6)))
+        f.write(chunk(b"IEND", b""))
+
+
+def resize(rgba, w, h):
+    """Bilinear resample an (H, W, 4) uint8 image to (h, w)."""
+    sh, sw = rgba.shape[:2]
+    if (sh, sw) == (h, w):
+        return rgba
+    img = rgba.astype(np.float32)
+    ys = np.clip((np.arange(h) + 0.5) * sh / h - 0.5, 0, sh - 1)
+    xs = np.clip((np.arange(w) + 0.5) * sw / w - 0.5, 0, sw - 1)
+    y0, x0 = ys.astype(int), xs.astype(int)
+    y1, x1 = np.minimum(y0 + 1, sh - 1), np.minimum(x0 + 1, sw - 1)
+    fy, fx = (ys - y0)[:, None, None], (xs - x0)[None, :, None]
+    top = img[y0][:, x0] * (1 - fx) + img[y0][:, x1] * fx
+    bot = img[y1][:, x0] * (1 - fx) + img[y1][:, x1] * fx
+    return np.clip(top * (1 - fy) + bot * fy + 0.5, 0, 255).astype(np.uint8)

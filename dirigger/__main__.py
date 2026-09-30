@@ -27,9 +27,9 @@ def cmd_info(args):
     skin = _load_skin(args.msh)
     print(f"{m.name}  anim script: {m.anim_script}")
     print(f"nodes: {len(m.nodes)} ({len(m.bones)} bones/dummies, {len(m.mesh_nodes)} meshes)")
-    print("\nmaterials:")
+    print(f"\nmaterials ({m.slot_count} slots, surface params {m.surface_params}):")
     for i, mat in enumerate(m.materials):
-        print(f"  {i:2d} {mat.name}")
+        print(f"  {i:2d} {mat.name}  flags={mat.flags:#x}")
     print("\nmesh nodes:")
     for n in m.mesh_nodes:
         me = n.mesh

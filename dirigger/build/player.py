@@ -86,23 +86,86 @@ def _split_palettes(tris, tri_bones, limit=MAX_PALETTE):
     return out
 
 
-def template_materials(template_msh, template_skin):
-    """Slot name -> existing template material: head surfaces get the head material,
-    everything else the body material (taken from the template's first skin)."""
-    smap = dict(template_skin.skins[0].material_map) if template_skin else {}
+def _main_slot(node):
+    """Material slot of a mesh node's largest surface."""
+    me = node.mesh
+    if not me or not me.surface_slots:
+        return None
+    counts = me.lods[0].index_counts
+    return me.surface_slots[max(range(len(counts)), key=counts.__getitem__)]
 
-    def mat_of(node_name):
-        node = template_msh.node_by_name(node_name)
-        if node is None or not node.mesh.surface_slots:
-            return None
-        idx = smap.get(node.mesh.surface_slots[0])
-        return template_msh.materials[idx].name if idx is not None else None
 
-    body, head = mat_of("body"), mat_of("head")
-    out = {k: body for k in ("torso", "legs", "feet") if body}
-    if head:
-        out["head"] = head
-    return out
+def template_slot_plan(template_msh, template_skin):
+    """Pick the template slots our parts draw with: {"body", "head", "head_shadow"} -> slot.
+
+    Every slot here is one the template's own skins already map to a material that
+    exists in the game, so the output never names a material the game cannot load.
+    """
+    nodes = {n.name: n for n in template_msh.mesh_nodes}
+    body = _main_slot(nodes["body"]) if "body" in nodes else None
+    if body is None:
+        rest = [n for k, n in nodes.items() if not k.startswith("head") and "hair" not in k]
+        if rest:
+            big = max(rest, key=lambda n: n.mesh.lods[0].vertex_count)
+            body = _main_slot(big)
+    if body is None:
+        raise ValueError("template has no body mesh to take a material slot from")
+    head = _main_slot(nodes["head"]) if "head" in nodes else None
+    shadow = _main_slot(nodes["head_shadow"]) if "head_shadow" in nodes else None
+    if shadow is None and template_skin:
+        for sl, mi in template_skin.skins[0].material_map:
+            if template_msh.materials[mi].name.lower() == "shadow_def.mat":
+                shadow = sl
+                break
+    return {"body": body, "head": body if head is None else head, "head_shadow": shadow}
+
+
+def slot_material_names(template_msh, template_skin):
+    """Slot -> material name the template's third-person skin uses for it."""
+    presets = template_skin.skins if template_skin else []
+    pick = next((p for p in presets if "tpp" in p.name.lower()), presets[0] if presets else None)
+    if pick is None:
+        return {}
+    return {sl: template_msh.materials[mi].name for sl, mi in pick.material_map}
+
+
+ATLAS_PAD = 1 / 64          # border around each atlas cell, as a fraction of the cell
+
+
+def atlas_layout(n):
+    """Grid for n atlas cells: (cols, rows, [(u0, v0, du, dv)] per cell) in 0..1 UV space."""
+    cols = int(np.ceil(np.sqrt(n)))
+    rows = int(np.ceil(n / cols))
+    xf = []
+    for k in range(n):
+        r, c = divmod(k, cols)
+        xf.append(((c + ATLAS_PAD) / cols, (r + ATLAS_PAD) / rows,
+                   (1 - 2 * ATLAS_PAD) / cols, (1 - 2 * ATLAS_PAD) / rows))
+    return cols, rows, xf
+
+
+def build_atlas(images, max_size=4096):
+    """Lay images out on the `atlas_layout` grid and return the RGBA atlas.
+
+    Each cell has an edge-extended border so mipmaps don't bleed between cells.
+    `None` images become flat grey cells.
+    """
+    from ..io.png import resize
+    cols, rows, _ = atlas_layout(len(images))
+    big = max([max(im.shape[:2]) for im in images if im is not None] or [512])
+    cell = 1 << int(np.ceil(np.log2(max(big, 128))))
+    cell = max(128, min(cell, max_size // max(cols, rows)))
+    pad = int(cell * ATLAS_PAD)
+    inner = cell - 2 * pad
+    atlas = np.full((rows * cell, cols * cell, 4), 128, np.uint8)
+    atlas[..., 3] = 255
+    for k, im in enumerate(images):
+        r, c = divmod(k, cols)
+        if im is None:
+            im = atlas[:inner, :inner]
+        tile = np.pad(resize(im, inner, inner), ((pad, pad), (pad, pad), (0, 0)), mode="edge")
+        atlas[r * cell:(r + 1) * cell, c * cell:(c + 1) * cell] = tile
+    return atlas
 
 
 def transfer_morphs(template_msh, head_positions, falloff=(1.0, 4.0)):
@@ -135,8 +198,16 @@ def transfer_morphs(template_msh, head_positions, falloff=(1.0, 4.0)):
 
 
 def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, textures=None,
-                 materials=None, log=print):
-    """Write the player model. Returns a dict with paths and statistics."""
+                 materials=None, material_mode="template", log=print):
+    """Write the player model. Returns a dict with paths and statistics.
+
+    material_mode:
+      "template"  draw with the template's own slots and materials, which exist in the
+                  game. Several textures for one material are packed into an atlas.
+      "custom"    one new material per texture slot (<base>_<slot>.mat or `materials`).
+                  These must be packed into the game as real .mat resources, otherwise
+                  the engine has nothing to draw and the model is invisible.
+    """
     base = base or os.path.splitext(template_msh.name)[0]
     names = [n.name for n in template_msh.bones]
     W = rig.weights
@@ -192,15 +263,53 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
     if not use_obj_mats:
         slot_names.sort(key=lambda s: ("torso", "legs", "feet", "head").index(s))
     tri_slot = np.array([slot_names.index(s) for s in tri_slot_name])
-    shadow_slot = len(slot_names)
-    n_slots = len(slot_names) + 1
     is_head = tri_region == TEX_REGIONS.index("head")
 
-    # materials: one DEFAULT per slot (shadow_def for the shadow slot), then ours
-    mat_names = [(materials or {}).get(s, f"{base}_{s}.mat") for s in slot_names]
-    mats = [Material("DEFAULT.MAT", 1) for _ in slot_names] + [Material("shadow_def.mat", 1)]
-    mats += [Material(n, 1) for n in mat_names]
-    real_index = {s: n_slots + k for k, s in enumerate(slot_names)}
+    if material_mode == "template" and template_skin is None:
+        log("  template has no .Skin; falling back to custom materials")
+        material_mode = "custom"
+
+    cells = {}                                  # cell id -> (u0, v0, du, dv)
+    tex_jobs = []                               # (report label, material name, [slot names])
+    if material_mode == "template":
+        plan = template_slot_plan(template_msh, template_skin)
+        mat_names_of = slot_material_names(template_msh, template_skin)
+        # every triangle draws with the template's head or body slot
+        tri_out = np.where(is_head, plan["head"], plan["body"])
+        body_slot = lambda t: int(tri_out[t])
+        shadow_slot = plan["head_shadow"]
+        # one texture per template slot: slot names sharing a slot go into an atlas
+        users = OrderedDict()
+        for t in range(len(tri_rv)):
+            users.setdefault(int(tri_out[t]), OrderedDict())[int(tri_slot[t])] = None
+        for tslot, used in users.items():
+            used = list(used)
+            label = "head" if tslot == plan["head"] and tslot != plan["body"] else "body"
+            tex_jobs.append((label, mat_names_of.get(tslot, f"slot {tslot}"),
+                             [slot_names[k] for k in used], tslot))
+            if len(used) > 1:
+                # each source texture gets a cell in one atlas per template slot
+                cells.update({(tslot, k): x for k, x in zip(used, atlas_layout(len(used))[2])})
+
+        def cell_of_tri(t):
+            key = (int(tri_out[t]), int(tri_slot[t]))
+            return key if key in cells else None
+        mats = list(template_msh.materials)
+        slot_count = template_msh.slot_count
+        surface_params = list(template_msh.surface_params)
+    else:
+        shadow_slot = len(slot_names)
+        n_slots = len(slot_names) + 1
+        body_slot = lambda t: int(tri_slot[t])
+        cell_of_tri = lambda t: None
+        # materials: one DEFAULT per slot (shadow_def for the shadow slot), then ours
+        mat_names = [(materials or {}).get(s, f"{base}_{s}.mat") for s in slot_names]
+        mats = [Material("DEFAULT.MAT", 1) for _ in slot_names] + [Material("shadow_def.mat", 1)]
+        mats += [Material(n, 1) for n in mat_names]
+        real_index = {s: n_slots + k for k, s in enumerate(slot_names)}
+        slot_count = n_slots
+        surface_params = list(range(n_slots + len(slot_names)))
+        tex_jobs = [(s, n, [s], None) for s, n in zip(slot_names, mat_names)]
 
     # --- per-vertex influences ----------------------------------------------
     order = np.argsort(-W, axis=1)[:, :4]
@@ -208,6 +317,13 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
     tri_bones = [set(b for pi in obj.tris_pos[t] for b, _ in infl[pi]) for t in range(len(tri_rv))]
 
     buffers = BufferBuilder()
+
+    def uv_in_cell(uv, cell):
+        if cell is None:
+            return tuple(uv)
+        u0, v0, du, dv = cells[cell]
+        u, v = np.clip(uv, 0.0, 1.0)
+        return (u0 + u * du, v0 + v * dv)
 
     def make_mesh(tris, layout, slot_of_tri, morph=False):
         surfaces, slots_out, pals = [], [], []
@@ -220,18 +336,19 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
                 local = {b: k for k, b in enumerate(pal)}
                 vmap, tri_list = {}, []
                 for t in part:
+                    cell = cell_of_tri(t)
                     for rv in tri_rv[t]:
-                        if rv not in vmap:
-                            vmap[rv] = len(positions)
+                        if (rv, cell) not in vmap:
+                            vmap[(rv, cell)] = len(positions)
                             pi = rv_pos[rv]
                             positions.append(tuple(RP[rv]))
-                            uvs.append(tuple(UV[rv]))
+                            uvs.append(uv_in_cell(UV[rv], cell))
                             nrm.append(tuple(RN[rv]))
                             tan.append(tuple(RT[rv]))
                             wb, ib = pack_influences([(local[b], w) for b, w in infl[pi]])
                             wts.append(wb)
                             idx.append(ib)
-                        tri_list.append(vmap[rv])
+                        tri_list.append(vmap[(rv, cell)])
                 surfaces.append(tri_list)
                 slots_out.append(slot)
                 pals.append(pal)
@@ -250,12 +367,15 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
     head_tris = [t for t in range(len(tri_rv)) if is_head[t]]
     parts = []
     if body_tris:
-        parts.append(("body",) + make_mesh(body_tris, SKINNED, lambda t: int(tri_slot[t])))
+        parts.append(("body",) + make_mesh(body_tris, SKINNED, body_slot))
     if head_tris:
         has_morphs = bool(template_msh.morph_names)
         parts.append(("head",) + make_mesh(head_tris, MORPH if has_morphs else SKINNED,
-                                           lambda t: int(tri_slot[t]), morph=has_morphs))
-        parts.append(("head_shadow",) + make_mesh(head_tris, SHADOW, lambda t: shadow_slot))
+                                           body_slot, morph=has_morphs))
+        if shadow_slot is not None:
+            parts.append(("head_shadow",) + make_mesh(head_tris, SHADOW, lambda t: shadow_slot))
+        else:
+            log("  template has no shadow slot; skipping head_shadow")
 
     # --- nodes ----------------------------------------------------------------
     tmpl_mesh_node = next(n for n in template_msh.nodes if n.type == NODE_MESH)
@@ -270,11 +390,10 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
         nodes.append(Node(len(nodes), name, -1, NODE_MESH, 0, tmpl_mesh_node.flags,
                           None, None, None, None, mesh, bytes(raw)))
 
-    surface_params = list(range(n_slots + len(slot_names)))
     header = list(template_msh.header)
     header[5] = len(parts) + 1
     msh = MeshFile(name=f"{base}.msh", anim_script=template_msh.anim_script, nodes=nodes,
-                   materials=mats, slot_count=n_slots, surface_params=surface_params,
+                   materials=mats, slot_count=slot_count, surface_params=surface_params,
                    morph_names=list(template_msh.morph_names) if head_tris else [],
                    morph_table_words=list(template_msh.morph_table_words) if head_tris else [],
                    header=tuple(header))
@@ -282,9 +401,12 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
 
     # --- skins ------------------------------------------------------------------
     node_index = {n.name: i for i, n in enumerate(nodes)}
-    matmap = [(s, real_index[slot_names[s]]) for s in range(len(slot_names))]
-    matmap.append((shadow_slot, n_slots - 1))
-    params = [0x0A00 | p for p in surface_params]
+    if material_mode == "template":
+        matmap, params = None, None            # keep each template preset's own
+    else:
+        matmap = [(s, real_index[slot_names[s]]) for s in range(len(slot_names))]
+        matmap.append((shadow_slot, n_slots - 1))
+        params = [0x0A00 | p for p in surface_params]
     presets = []
     tmpl_presets = template_skin.skins if template_skin else [
         SkinPreset("Default", [], [], []), SkinPreset(f"{base}_TPP", [], [], [], extra=0x12),
@@ -293,7 +415,8 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
         fpp = "fpp" in tp.name.lower()
         hide = ["head"] if fpp else ["head_shadow"]
         hidden = [(node_index[h], 3) for h in hide if h in node_index]
-        presets.append(SkinPreset(tp.name, matmap, hidden, params, tp.flags, tp.extra))
+        presets.append(SkinPreset(tp.name, tp.material_map if matmap is None else matmap, hidden,
+                                  tp.params if params is None else params, tp.flags, tp.extra))
     skin_bytes, skinfix_bytes = build_skin(SkinFile(presets))
 
     # --- write ------------------------------------------------------------------
@@ -304,22 +427,34 @@ def build_player(template_msh, template_skin, obj, rig, out_dir, base=None, text
         with open(os.path.join(out_dir, base + ext), "wb") as f:
             f.write(data)
 
+    from ..io.png import read_png, write_dds, write_png
     tex_dir = os.path.join(out_dir, "textures")
     os.makedirs(tex_dir, exist_ok=True)
     tex_report = []
-    for s, mname in zip(slot_names, mat_names):
-        src = slots[s]
-        stem = os.path.splitext(mname)[0]
-        if src and os.path.exists(src):
-            from ..io.png import read_png, write_dds
+    for label, mname, used, tslot in tex_jobs:
+        stem = os.path.splitext(os.path.basename(mname))[0].replace(" ", "_")
+        srcs = [slots[s] if slots[s] and os.path.exists(slots[s]) else None for s in used]
+        if len(used) > 1:
+            imgs = [read_png(p) if p else None for p in srcs]
+            if not any(i is not None for i in imgs):
+                tex_report.append((label, mname, None))
+                continue
+            atlas = build_atlas(imgs)
+            write_png(os.path.join(tex_dir, stem + ".png"), atlas)
+            write_dds(os.path.join(tex_dir, stem + ".dds"), atlas)
+            desc = "atlas of " + ", ".join(
+                f"{s}={os.path.basename(p) if p else 'MISSING'}" for s, p in zip(used, srcs))
+            tex_report.append((label, mname, f"textures/{stem}.dds ({desc})"))
+        elif srcs[0]:
+            src = srcs[0]
             shutil.copyfile(src, os.path.join(tex_dir, stem + os.path.splitext(src)[1].lower()))
             write_dds(os.path.join(tex_dir, stem + ".dds"), read_png(src))
-            tex_report.append((s, mname, os.path.basename(src)))
+            tex_report.append((label, mname, f"textures/{stem}.dds ({os.path.basename(src)})"))
         else:
-            tex_report.append((s, mname, None))
+            tex_report.append((label, mname, None))
 
     stats = {
-        "base": base, "out_dir": out_dir,
+        "base": base, "out_dir": out_dir, "material_mode": material_mode,
         "parts": [(n, len(P), [len(p) for p in m.palettes], m.surface_slots) for n, m, P in parts],
         "slots": slot_names, "materials": tex_report,
         "skins": [(p.name, [nodes[h].name for h, _ in p.hidden]) for p in presets],

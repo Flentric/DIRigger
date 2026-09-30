@@ -49,12 +49,13 @@ def main(argv=None):
                     help="keep the model's own height instead of matching the template")
     ap.add_argument("--texture", action="append", default=[], metavar="REGION=FILE",
                     help="texture for a region (head/torso/legs/feet); repeatable")
+    ap.add_argument("--custom-materials", action="store_true",
+                    help="write new <name>_<slot>.mat materials instead of the template's own. "
+                         "The model stays invisible until those .mat files are packed into the "
+                         "game; the default uses materials the game already has")
     ap.add_argument("--material", action="append", default=[], metavar="SLOT=NAME.mat",
-                    help="use an existing game material for a slot; repeatable")
-    ap.add_argument("--reuse-materials", action="store_true",
-                    help="point every slot at the template's own materials (body/head) so the "
-                         "model renders with existing game materials; textures will not match "
-                         "until real materials are made")
+                    help="with --custom-materials: material name for a slot; repeatable")
+    ap.add_argument("--reuse-materials", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
     obj_path = os.path.abspath(args.obj)
@@ -106,17 +107,16 @@ def main(argv=None):
     obj = load_obj(obj_path)
     print(f"model: {obj_path} ({len(obj.positions)} vertices, {len(obj.tris_pos)} triangles, "
           f"materials: {', '.join(obj.materials)})")
-    if args.reuse_materials or cfg.get("reuse_materials"):
-        from ..build.player import template_materials
-        for k, v in template_materials(tm, tskin).items():
-            materials.setdefault(k, v)
+    custom = args.custom_materials or cfg.get("custom_materials", False)
+    if materials and not custom:
+        print("note: --material / \"materials\" only apply with --custom-materials; ignoring")
     tmpl = load_template(tm)
     rig = autorig(tmpl, obj.positions, obj.tris_pos,
                   up=args.up or cfg.get("up"), forward=args.forward or cfg.get("forward"),
                   keep_size=args.keep_size or cfg.get("keep_size", False))
 
     stats = build_player(tm, tskin, obj, rig, out, base=base, textures=textures or None,
-                         materials=materials)
+                         materials=materials, material_mode="custom" if custom else "template")
     written = verify_output(out, base)
     sf = parse_skin(open(os.path.join(out, base + ".Skin"), "rb").read())
     for label, skin_name in (("tpp", next((s.name for s in sf.skins if "tpp" in s.name.lower()), None)),
@@ -127,9 +127,20 @@ def main(argv=None):
     lines = [f"output: {out}", "", "mesh nodes:"]
     for name, nv, pals, slots in stats["parts"]:
         lines.append(f"  {name}: {nv} vertices, surfaces={len(pals)} palettes={pals} slots={slots}")
-    lines += ["", "material slots:"]
+    lines += ["", "materials:"]
     for s, mname, tex in stats["materials"]:
         lines.append(f"  {s:8s} -> {mname}   texture: {tex or 'MISSING (set one with --texture ' + s + '=file.png)'}")
+    if stats["material_mode"] == "template":
+        lines += ["", "The model draws with the template's own materials, so it is visible in game",
+                  "straight away (with the template's textures). To see your textures, replace the",
+                  "diffuse texture each material above uses with the .dds listed next to it.",
+                  "Its normal/specular maps still come from the template."]
+    else:
+        lines += ["", "WARNING: custom materials. Unless you named existing game materials, the ones",
+                  "above do not exist in the game yet; until",
+                  "they are packed in as real .mat resources the engine has nothing to draw with",
+                  "and the model is INVISIBLE (only the shadow_def.mat head shadow shows).",
+                  "Leave out --custom-materials to use the template's materials instead."]
     lines += ["", "skins:"]
     for name, hidden in stats["skins"]:
         lines.append(f"  {name}: hides {', '.join(hidden) or 'nothing'}")
